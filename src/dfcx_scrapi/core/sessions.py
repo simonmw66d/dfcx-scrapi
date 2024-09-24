@@ -300,7 +300,8 @@ class Sessions(scrapi_base.ScrapiBase):
         parameters=None,
         end_user_metadata=None,
         populate_data_store_connection_signals=False,
-        intent_id: str = None
+        intent_id: str = None,
+        current_page: str = None,
     ):
         """Returns the result of detect intent with texts as inputs.
 
@@ -358,9 +359,12 @@ class Sessions(scrapi_base.ScrapiBase):
             query_param_mapping["end_user_metadata"] = end_user_metadata
 
         if populate_data_store_connection_signals:
-            query_param_mapping[
-                "populate_data_store_connection_signals"
-            ] = populate_data_store_connection_signals
+            query_param_mapping["populate_data_store_connection_signals"] = (
+                populate_data_store_connection_signals
+            )
+
+        if current_page:
+            query_param_mapping["current_page"] = current_page
 
         if query_param_mapping:
             query_params = types.session.QueryParameters(query_param_mapping)
