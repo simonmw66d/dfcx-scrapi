@@ -71,16 +71,21 @@ class Evaluations(ScrapiBase):
 
         print("Initializing Vertex AI...")
         self.init_vertex(self.agent_id)
-        self.s = Sessions(agent_id=self.agent_id, tools_map=tools_map)
-        self.p = Playbooks(agent_id=self.agent_id, playbooks_map=playbooks_map)
-        self.t = Tools(agent_id=self.agent_id, tools_map=tools_map)
+        self.s = Sessions(
+            agent_id=self.agent_id, tools_map=tools_map, creds=self.creds)
+        self.p = Playbooks(
+            agent_id=self.agent_id,
+            playbooks_map=playbooks_map, creds=self.creds)
+        self.t = Tools(
+            agent_id=self.agent_id, tools_map=tools_map, creds=self.creds)
         self.ar = AgentResponse()
 
         self.generation_model = self.model_setup(generation_model)
         self.embedding_model = self.model_setup(embedding_model)
 
+        self.user_input_metrics = metrics
         self.metrics = build_metrics(
-            metrics=metrics,
+            metrics=self.user_input_metrics,
             generation_model=self.generation_model,
             embedding_model=self.embedding_model
             )
@@ -94,7 +99,12 @@ class Evaluations(ScrapiBase):
     def clean_outputs(df: pd.DataFrame) -> pd.DataFrame:
         """Clean final output dataframe."""
         # drop cols used for response mapping
-        df = df.drop(columns=["utterance_pair", "tool_pair", "playbook_pair"])
+        df = df.drop(columns=[
+            "utterance_pair",
+            "tool_pair",
+            "playbook_pair",
+            "flow_pair"
+            ])
         value_map = {}
         for col, dtype in zip(df.columns, df.dtypes):
             if dtype in ["string", "object"]:
@@ -108,10 +118,10 @@ class Evaluations(ScrapiBase):
 
     @staticmethod
     def process_playbook_invocations(
-            responses: List[str],
-            index: int,
-            row: pd.Series,
-            df: pd.DataFrame) -> pd.DataFrame:
+        responses: List[str],
+        index: int,
+        row: pd.Series,
+        df: pd.DataFrame) -> pd.DataFrame:
         if row["playbook_pair"] in [None, "", "NaN", "nan"]:
             playbook_index_list = [index]
         else:
@@ -120,6 +130,23 @@ class Evaluations(ScrapiBase):
         for idx in playbook_index_list:
             playbook = responses.pop(0)
             df.loc[int(idx), "res_playbook_name"] = playbook["playbook_name"]
+
+        return df
+
+    @staticmethod
+    def process_flow_invocations(
+        responses: List[str],
+        index: int,
+        row: pd.Series,
+        df: pd.DataFrame) -> pd.DataFrame:
+        if row["flow_pair"] in [None, "", "NaN", "nan"]:
+            flow_index_list = [index]
+        else:
+            flow_index_list = literal_eval(row["flow_pair"])
+
+        for idx in flow_index_list:
+            flow = responses.pop(0)
+            df.loc[int(idx), "res_flow_name"] = flow["flow_name"]
 
         return df
 
@@ -155,18 +182,19 @@ class Evaluations(ScrapiBase):
 
         return df
 
-    @staticmethod
-    def add_response_columns(df: pd.DataFrame) -> pd.DataFrame:
+    def add_response_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
         df.loc[:, "agent_response"] = pd.Series(dtype="str")
         df.loc[:, "agent_id"] = pd.Series(dtype="str")
         df.loc[:, "session_id"] = pd.Series(dtype="str")
         df.loc[:, "res_playbook_name"] = pd.Series(dtype="str")
-        df.loc[:, "res_tool_name"] = pd.Series(dtype="str")
-        df.loc[:, "res_tool_action"] = pd.Series(dtype="str")
-        df.loc[:, "res_input_params"] = pd.Series(dtype="str")
-        df.loc[:, "res_output_params"] = pd.Series(dtype="str")
+
+        if "tool_call_quality" in self.user_input_metrics:
+            df.loc[:, "res_tool_name"] = pd.Series(dtype="str")
+            df.loc[:, "res_tool_action"] = pd.Series(dtype="str")
+            df.loc[:, "res_input_params"] = pd.Series(dtype="str")
+            df.loc[:, "res_output_params"] = pd.Series(dtype="str")
 
         return df
 
@@ -201,19 +229,27 @@ class Evaluations(ScrapiBase):
             utterance_idx = int(row["utterance_pair"])
             df.loc[utterance_idx, ["agent_response"]] = [text_res]
 
-            # Handle Play Invocations
+            # Handle Playbook Invocations
             playbook_responses = self.s.collect_playbook_responses(res)
             if len(playbook_responses) > 0:
                 df = self.process_playbook_invocations(
                     playbook_responses, index, row, df
                 )
 
-            # Handle Tool Invocations
-            tool_responses = self.s.collect_tool_responses(res)
-            if len(tool_responses) > 0:
-                df = self.process_tool_invocations(
-                    tool_responses, index, row, df
+            # Handle Flow Invocations
+            flow_responses = self.s.collect_flow_responses(res)
+            if len(flow_responses) > 0:
+                df = self.process_flow_invocations(
+                    flow_responses, index, row, df
                 )
+
+            # Handle Tool Invocations
+            if "tool_call_quality" in self.user_input_metrics:
+                tool_responses = self.s.collect_tool_responses(res)
+                if len(tool_responses) > 0:
+                    df = self.process_tool_invocations(
+                        tool_responses, index, row, df
+                    )
 
         return df
 
@@ -251,9 +287,8 @@ class DataLoader:
         self.required_columns = [
             "eval_id",
             "action_id",
+            "action_type",
             "action_input",
-            "action_input_parameters",
-            "tool_action",
         ]
 
     @staticmethod
@@ -390,6 +425,29 @@ class DataLoader:
                 df.loc[pair[0], "playbook_pair"] = str(pair[1])
 
         return df
+    
+    def pair_flow_calls(self, df: pd.DataFrame) -> pd.DataFrame:
+        "Identifies pairings of agent_utterance/flow_invocation by eval_id."
+        df["flow_pair"] = pd.Series(dtype="string")
+        grouped = df.groupby("eval_id")
+
+        for _, group in grouped:
+            user = group[
+                group["action_type"] == "User Utterance"
+            ].index.tolist()
+            flow_list = group[
+                group["action_type"] == "Flow Invocation"
+            ].index.tolist()
+
+            pairs = self.get_matching_list_idx(
+                user, flow_list
+            )
+
+            # Create pairs of user/flow_list row indices
+            for pair in pairs:
+                df.loc[pair[0], "flow_pair"] = str(pair[1])
+
+        return df
 
     def validate_input_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Validate input columns"""
@@ -455,16 +513,27 @@ class DataLoader:
         model_name = self.get_model_name(gen_settings)
 
         current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        metrics_info = {}
+        if "similarity" in df.columns:
+            metrics_info["similarity"] = df["similarity"].mean()
+        if "tool_name_match" in df.columns:
+            metrics_info["tool_match"] = df["tool_name_match"].mean()
+
         eval_results_summary = pd.DataFrame({
             'timestamp': [current_datetime],
             'total_conversations': [len(df['eval_id'].unique())],
-            'similarity': [df['similarity'].mean()],
-            'tool_match': [df['tool_name_match'].mean()],
             'model_name': [model_name],
             'agent_name': agent.display_name,
             'agent_id': [self.agent_id],
             'notes': [""]
         })
+
+        # insert metrics for report
+        insert_index = eval_results_summary.columns.get_loc(
+            "total_conversations") + 1
+        for metric, value in metrics_info.items():
+            eval_results_summary.insert(insert_index, metric, [value])
+            insert_index += 1
 
         return eval_results_summary
 
@@ -510,6 +579,7 @@ class DataLoader:
         df = self.pair_utterances(df)
         df = self.pair_tool_calls(df)
         df = self.pair_playbook_calls(df)
+        df = self.pair_flow_calls(df)
 
         # fill remaining NA with empty string
         for col in df.columns:
