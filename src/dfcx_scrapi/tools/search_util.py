@@ -18,6 +18,7 @@ import logging
 import time
 from operator import attrgetter
 from typing import Dict, List
+import re
 
 import numpy as np
 import pandas as pd
@@ -80,6 +81,8 @@ class SearchUtil(scrapi_base.ScrapiBase):
             )
             self.intents_map = self.intents.get_intents_map(agent_id)
             self.client_options = self._set_region(agent_id)
+
+        self.SYSTEM_PAGES = ["START_PAGE", "END_SESSION", "END_FLOW"]
 
     @staticmethod
     def get_route_df(page_df: pd.DataFrame, route_group_df: pd.DataFrame):
@@ -499,12 +502,18 @@ class SearchUtil(scrapi_base.ScrapiBase):
 
         return params_list
 
-    def search_conditionals_page(self, page_id, search):
+    def search_conditionals_page(
+            self,
+            page_id: str,
+            substring: str | None = None,
+            regex: str | None = None
+        ) -> pd.DataFrame:
         """Search page for an exact string in conditional routes
 
         Args:
           page_id: the formatted CX Page ID to use
-          search: string to search
+          substring: string to search
+          regex: pattern regex to search
 
         Returns:
           Dataframe of the results of where this string was found
@@ -514,7 +523,11 @@ class SearchUtil(scrapi_base.ScrapiBase):
         page = self.pages.get_page(page_id=page_id)
         i = 1
         for route in page.transition_routes:
-            if search.lower() in route.condition.lower():
+            include_route = (
+                (substring is not None and substring.lower() in route.condition.lower()) or
+                (regex is not None and re.search(regex, route.condition, flags=re.I) is not None)
+            )
+            if include_route:
                 iter_frame = pd.DataFrame(
                     columns=["resource_id", "condition", "route_id"],
                     data=[[page_id, route.condition, i]],
@@ -524,12 +537,18 @@ class SearchUtil(scrapi_base.ScrapiBase):
 
         return locator
 
-    def search_conditionals_flow(self, flow_id, search):
+    def search_conditionals_flow(
+            self,
+            flow_id: str,
+            substring: str | None = None,
+            regex: str | None = None
+        ) -> pd.DataFrame:
         """Search flow for an exact string in conditional routes
 
         Args:
           flow_id: the formatted CX Flow ID to use
-          search: string to search
+          substring: string to search
+          regex: regex pattern to search
 
         Returns:
           Dataframe of the results of where this string was found
@@ -539,7 +558,11 @@ class SearchUtil(scrapi_base.ScrapiBase):
         flow = self.flows.get_flow(flow_id=flow_id)
         i = 1
         for route in flow.transition_routes:
-            if search.lower() in route.condition.lower():
+            include_route = (
+                (substring is not None and substring.lower() in route.condition.lower()) or
+                (regex is not None and re.search(regex, route.condition, flags=re.I) is not None)
+            )
+            if include_route:
                 iter_frame = pd.DataFrame(
                     columns=["resource_id", "condition", "route_id"],
                     data=[[flow_id, route.condition, i]],
@@ -551,18 +574,20 @@ class SearchUtil(scrapi_base.ScrapiBase):
 
     def search_conditionals(
         self,
-        search,
-        agent_id,
-        flow_name=None,
-        page_name=None,
-        flag_search_all=False,
-    ):
+        agent_id: str,
+        substring: str | None = None,
+        regex: str | re.Pattern | None = None,
+        flow_name: str = None,
+        page_name: str = None,
+        flag_search_all: bool = False,
+    ) -> pd.DataFrame | None:
         """This is the master function where a user can search across
         all pages in a flow, an entire agent etc.
         Search conditionals for an exact string in conditional routes.
 
         Args:
-          search: string to search
+          substring: string to search
+          regex: regex pattern to search
           agent_id: the formatted CX Agent ID to use
           flow_name: (optional) the display name of the flow to search
           page_name:  (optional) the display name of the page to search
@@ -595,21 +620,26 @@ class SearchUtil(scrapi_base.ScrapiBase):
                     flow_name,
                     agent_id,
                 )
-            try:
-                pages_map = self.pages.get_pages_map(
-                    flow_id=flows_map[flow_name], reverse=True
+            if page_name == "START_PAGE":
+                return self.search_conditionals_flow(
+                    flow_id=flows_map[flow_name], substring=substring, regex=regex
                 )
-                return self.search_conditionals_page(
-                    page_id=pages_map[page_name], search=search
-                )
+            elif page_name not in self.SYSTEM_PAGES:
+                try:
+                    pages_map = self.pages.get_pages_map(
+                        flow_id=flows_map[flow_name], reverse=True
+                    )
+                    return self.search_conditionals_page(
+                        page_id=pages_map[page_name], substring=substring, regex=regex
+                    )
 
-            except ValueError:
-                logging.error(
-                    "%s is not a valid page_name for flow %s in agent %s",
-                    page_name,
-                    flow_name,
-                    agent_id,
-                )
+                except ValueError:
+                    logging.error(
+                        "%s is not a valid page_name for flow %s in agent %s",
+                        page_name,
+                        flow_name,
+                        agent_id,
+                    )
 
         if flow_name:
             locator = pd.DataFrame()
@@ -618,7 +648,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
                     agent_id=agent_id, reverse=True
                 )
                 flow_search = self.search_conditionals_flow(
-                    flow_id=flows_map[flow_name], search=search
+                    flow_id=flows_map[flow_name], substring=substring, regex=regex
                 )
                 flow_search.insert(0, "resource_name", flow_name)
                 flow_search.insert(0, "resource_type", "flow")
@@ -636,8 +666,10 @@ class SearchUtil(scrapi_base.ScrapiBase):
                     flow_id=flows_map[flow_name], reverse=True
                 )
                 for page in pages_map:
+                    if page in self.SYSTEM_PAGES:
+                        continue
                     page_search = self.search_conditionals_page(
-                        page_id=pages_map[page], search=search
+                        page_id=pages_map[page], substring=substring, regex=regex
                     )
                     time.sleep(0.5)
                     page_search.insert(0, "resource_name", page)
@@ -654,7 +686,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
             )
             for flow in flows_map:
                 flow_search = self.search_conditionals_flow(
-                    flow_id=flows_map[flow], search=search
+                    flow_id=flows_map[flow], substring=substring, regex=regex
                 )
                 flow_search.insert(0, "resource_name", flow)
                 flow_search.insert(0, "resource_type", "flow")
@@ -663,8 +695,10 @@ class SearchUtil(scrapi_base.ScrapiBase):
                     flow_id=flows_map[flow], reverse=True
                 )
                 for page in pages_map:
+                    if page in self.SYSTEM_PAGES:
+                        continue
                     page_search = self.search_conditionals_page(
-                        page_id=pages_map[page], search=search
+                        page_id=pages_map[page], substring=substring, regex=regex
                     )
                     time.sleep(0.5)
                     page_search.insert(0, "resource_name", page)
