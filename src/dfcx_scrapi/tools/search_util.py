@@ -506,7 +506,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
             self,
             page_id: str,
             substring: str | None = None,
-            regex: str | None = None
+            regex: str | re.Pattern | None = None
         ) -> pd.DataFrame:
         """Search page for an exact string in conditional routes
 
@@ -539,7 +539,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
             self,
             flow_id: str,
             substring: str | None = None,
-            regex: str | None = None
+            regex: str | re.Pattern | None = None
         ) -> pd.DataFrame:
         """Search flow for an exact string in conditional routes
 
