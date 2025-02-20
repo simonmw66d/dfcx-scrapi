@@ -521,8 +521,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
 
         locator = pd.DataFrame()
         page = self.pages.get_page(page_id=page_id)
-        i = 1
-        for route in page.transition_routes:
+        for i, route in enumerate(page.transition_routes, start=1):
             include_route = (
                 (substring is not None and substring.lower() in route.condition.lower()) or
                 (regex is not None and re.search(regex, route.condition, flags=re.I) is not None)
@@ -533,7 +532,6 @@ class SearchUtil(scrapi_base.ScrapiBase):
                     data=[[page_id, route.condition, i]],
                 )
                 locator = pd.concat([locator, iter_frame])
-            i += 1
 
         return locator
 
@@ -556,8 +554,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
 
         locator = pd.DataFrame()
         flow = self.flows.get_flow(flow_id=flow_id)
-        i = 1
-        for route in flow.transition_routes:
+        for i, route in enumerate(flow.transition_routes, start=1):
             include_route = (
                 (substring is not None and substring.lower() in route.condition.lower()) or
                 (regex is not None and re.search(regex, route.condition, flags=re.I) is not None)
@@ -568,7 +565,6 @@ class SearchUtil(scrapi_base.ScrapiBase):
                     data=[[flow_id, route.condition, i]],
                 )
                 locator = pd.concat([locator, iter_frame])
-            i += 1
 
         return locator
 
