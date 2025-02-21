@@ -513,7 +513,7 @@ class SearchUtil(scrapi_base.ScrapiBase):
         Args:
           page_id: the formatted CX Page ID to use
           substring: string to search
-          regex: pattern regex to search
+          regex: regex pattern to search
 
         Returns:
           Dataframe of the results of where this string was found
